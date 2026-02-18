@@ -37,6 +37,11 @@
         "command": "flutterRunner.hotReload",
         "title": "Flutter Runner: Hot Reload",
         "shortTitle": "Hot Reload"
+      },
+      {
+        "command": "flutterRunner.openDevTools",
+        "title": "Flutter Runner: Open DevTools",
+        "shortTitle": "DevTools"
       }
     ],
     "menus": {
@@ -53,6 +58,11 @@
         },
         {
           "command": "flutterRunner.hotReload",
+          "when": "flutterRunner.isFlutterProject && flutterRunner.isRunning",
+          "group": "navigation@2"
+        },
+        {
+          "command": "flutterRunner.openDevTools",
           "when": "flutterRunner.isFlutterProject && flutterRunner.isRunning",
           "group": "navigation@2"
         },

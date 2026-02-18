@@ -17,6 +17,7 @@ Extension para VS Code/Cursor enfocada en ejecutar Flutter con perfiles simples.
   - Automatico al guardar archivos `.dart` (configurable)
 - Si ya hay una app corriendo, `Run` vuelve a ejecutar como **hot restart** (rapido, toma cambios recientes).
 - `Stop` se mantiene como accion separada.
+- Boton/comando `Open DevTools` para abrir los DevTools en una pestana interna (sin navegador externo) cuando `flutter run` publica la URL.
 
 ## Comandos
 
@@ -24,6 +25,7 @@ Extension para VS Code/Cursor enfocada en ejecutar Flutter con perfiles simples.
 - `Flutter Runner: Stop Run`
 - `Flutter Runner: Select Run Profile`
 - `Flutter Runner: Hot Reload`
+- `Flutter Runner: Open DevTools`
 
 ## Configuracion
 

@@ -13,15 +13,19 @@ type RunProfile = {
 const FLUTTER_CONTEXT_KEY = "flutterRunner.isFlutterProject";
 const HAS_SELECTED_DEVICE_CONTEXT_KEY = "flutterRunner.hasSelectedDevice";
 const IS_RUNNING_CONTEXT_KEY = "flutterRunner.isRunning";
+const HAS_DEVTOOLS_URL_CONTEXT_KEY = "flutterRunner.hasDevToolsUrl";
+const DEVTOOLS_URL_PATTERN = /(https?:\/\/[^\s)]+)/i;
 
 let output: vscode.OutputChannel;
 let runProcess: ChildProcessWithoutNullStreams | undefined;
 let runButton: vscode.StatusBarItem;
 let stopButton: vscode.StatusBarItem;
+let devToolsButton: vscode.StatusBarItem;
 let profileButton: vscode.StatusBarItem;
 let selectedDeviceId: string | undefined;
 let extensionCtx: vscode.ExtensionContext;
 let hotReloadDebounceTimer: NodeJS.Timeout | undefined;
+let latestDevToolsUrl: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionCtx = context;
@@ -37,16 +41,23 @@ export function activate(context: vscode.ExtensionContext): void {
   stopButton.text = "$(debug-stop)";
   stopButton.tooltip = "Stop current Flutter run";
 
-  profileButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 198);
+  devToolsButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 198);
+  devToolsButton.command = "flutterRunner.openDevTools";
+  devToolsButton.text = "$(globe)";
+  devToolsButton.tooltip = "Open Flutter DevTools";
+
+  profileButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 197);
   profileButton.command = "flutterRunner.selectProfile";
 
   context.subscriptions.push(
     output,
     runButton,
     stopButton,
+    devToolsButton,
     profileButton,
     vscode.commands.registerCommand("flutterRunner.run", () => runFlutter(context)),
     vscode.commands.registerCommand("flutterRunner.stopRun", () => stopRun(context)),
+    vscode.commands.registerCommand("flutterRunner.openDevTools", openDevTools),
     vscode.commands.registerCommand("flutterRunner.hotReload", () => triggerHotReload("manual")),
     vscode.commands.registerCommand("flutterRunner.selectProfile", () => selectProfile(context)),
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -149,6 +160,8 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
   output.appendLine(`Flavor: ${flavor || "none"}`);
   output.appendLine(`Command: flutter ${args.join(" ")}`);
   output.appendLine("");
+  latestDevToolsUrl = undefined;
+  await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
 
   runProcess = spawn("flutter", args, {
     cwd: folder,
@@ -158,8 +171,16 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
   await setRunningState(context, true);
   await updateStatusBar(context);
 
-  runProcess.stdout.on("data", (chunk: Buffer) => output.append(chunk.toString()));
-  runProcess.stderr.on("data", (chunk: Buffer) => output.append(chunk.toString()));
+  runProcess.stdout.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    output.append(text);
+    void captureDevToolsUrl(text);
+  });
+  runProcess.stderr.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    output.append(text);
+    void captureDevToolsUrl(text);
+  });
 
   runProcess.on("error", (error) => {
     output.appendLine(`\n[error] ${error.message}`);
@@ -180,6 +201,8 @@ async function stopRun(context: vscode.ExtensionContext = extensionCtx): Promise
     runProcess.kill("SIGTERM");
     runProcess = undefined;
   }
+  latestDevToolsUrl = undefined;
+  await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
 
   await setRunningState(context, false);
   await updateStatusBar(context);
@@ -354,9 +377,12 @@ async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> 
 
   if (!flutter) {
     selectedDeviceId = undefined;
+    latestDevToolsUrl = undefined;
     await vscode.commands.executeCommand("setContext", HAS_SELECTED_DEVICE_CONTEXT_KEY, false);
+    await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
     runButton.hide();
     stopButton.hide();
+    devToolsButton.hide();
     profileButton.hide();
     return;
   }
@@ -364,8 +390,13 @@ async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> 
   runButton.show();
   if (runProcess) {
     stopButton.show();
+    devToolsButton.show();
+    devToolsButton.tooltip = latestDevToolsUrl
+      ? "Open Flutter DevTools in editor tab"
+      : "Waiting for Flutter DevTools URL...";
   } else {
     stopButton.hide();
+    devToolsButton.hide();
   }
   profileButton.show();
   selectedDeviceId = await resolveSelectedDeviceId();
@@ -565,6 +596,48 @@ async function triggerHotRestart(trigger: "manual"): Promise<void> {
   if (trigger === "manual") {
     void vscode.window.setStatusBarMessage("Flutter hot restart triggered", 1500);
   }
+}
+
+async function captureDevToolsUrl(outputChunk: string): Promise<void> {
+  const lines = outputChunk.split(/\r?\n/);
+  for (const line of lines) {
+    if (!/devtools/i.test(line)) {
+      continue;
+    }
+    const match = line.match(DEVTOOLS_URL_PATTERN);
+    if (!match) {
+      continue;
+    }
+    const url = sanitizeUrl(match[1]);
+    if (!url) {
+      continue;
+    }
+    latestDevToolsUrl = url;
+    await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, true);
+  }
+}
+
+async function openDevTools(): Promise<void> {
+  if (latestDevToolsUrl) {
+    try {
+      await vscode.commands.executeCommand("simpleBrowser.show", latestDevToolsUrl);
+      return;
+    } catch {
+      // fallback below
+    }
+  }
+
+  try {
+    await vscode.commands.executeCommand("flutter.openDevTools");
+    return;
+  } catch {
+    // fallback below
+  }
+
+  const msg = latestDevToolsUrl
+    ? "Could not open DevTools internally. You can open the URL manually from Flutter Runner output."
+    : "DevTools URL not detected yet. Wait for Flutter run startup logs and try again.";
+  void vscode.window.showWarningMessage(msg);
 }
 
 async function handleDocumentSaved(doc: vscode.TextDocument): Promise<void> {
@@ -776,4 +849,16 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function sanitizeUrl(candidate: string): string | undefined {
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return undefined;
+    }
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
 }
