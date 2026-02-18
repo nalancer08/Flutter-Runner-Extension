@@ -1,0 +1,4 @@
+**/*.ts
+**/.DS_Store
+**/tsconfig.json
+src/**

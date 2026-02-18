@@ -1,0 +1,124 @@
+{
+  "name": "flutter-runner-extension",
+  "displayName": "Flutter Runner",
+  "description": "Run Flutter projects in VS Code/Cursor with quick device and profile selection.",
+  "version": "0.0.1",
+  "publisher": "ercsanchez",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/pubspec.yaml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "flutterRunner.run",
+        "title": "Flutter Runner: Run",
+        "shortTitle": "Run"
+      },
+      {
+        "command": "flutterRunner.stopRun",
+        "title": "Flutter Runner: Stop Run",
+        "shortTitle": "Stop"
+      },
+      {
+        "command": "flutterRunner.selectProfile",
+        "title": "Flutter Runner: Select Run Profile",
+        "shortTitle": "Profile"
+      },
+      {
+        "command": "flutterRunner.hotReload",
+        "title": "Flutter Runner: Hot Reload",
+        "shortTitle": "Hot Reload"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "flutterRunner.run",
+          "when": "flutterRunner.isFlutterProject && flutterRunner.hasSelectedDevice",
+          "group": "navigation@1"
+        },
+        {
+          "command": "flutterRunner.stopRun",
+          "when": "flutterRunner.isFlutterProject && flutterRunner.isRunning",
+          "group": "navigation@1"
+        },
+        {
+          "command": "flutterRunner.hotReload",
+          "when": "flutterRunner.isFlutterProject && flutterRunner.isRunning",
+          "group": "navigation@2"
+        },
+        {
+          "command": "flutterRunner.selectProfile",
+          "when": "flutterRunner.isFlutterProject",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Flutter Runner",
+      "properties": {
+        "flutterRunner.activeProfile": {
+          "type": "string",
+          "default": "default",
+          "description": "Name of the active Flutter Runner profile."
+        },
+        "flutterRunner.profiles": {
+          "type": "array",
+          "default": [
+            {
+              "name": "default",
+              "dartEntrypoint": "lib/main.dart",
+              "flavor": ""
+            }
+          ],
+          "description": "Run profiles. Add custom fields to support future options.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Profile name."
+              },
+              "dartEntrypoint": {
+                "type": "string",
+                "description": "Dart entrypoint (for example: lib/main_dev.dart)."
+              },
+              "flavor": {
+                "type": "string",
+                "description": "Flutter flavor."
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "flutterRunner.hotReloadOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically trigger Flutter hot reload when saving Dart files while run is active."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.2",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.6.2"
+  }
+}
