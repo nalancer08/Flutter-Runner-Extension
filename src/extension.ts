@@ -28,6 +28,9 @@ let extensionCtx: vscode.ExtensionContext;
 let hotReloadDebounceTimer: NodeJS.Timeout | undefined;
 let latestDevToolsUrl: string | undefined;
 let isRunStarting = false;
+let cachedFlutterProjectFolder:
+  | { key: string; resolvedAt: number; folderPath: string | undefined }
+  | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionCtx = context;
@@ -113,16 +116,10 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
   isRunStarting = true;
   await setStartingState(context, true);
   try {
-    const folder = getWorkspaceFolderPath();
+    const folder = await resolveFlutterProjectFolderPath();
     if (!folder) {
-      void vscode.window.showErrorMessage("Open a workspace folder first.");
-      return;
-    }
-
-    const flutterProject = await isFlutterProject(folder);
-    if (!flutterProject) {
       void vscode.window.showErrorMessage(
-        "This is not a Flutter app/package project. Expected a pubspec.yaml with Flutter SDK dependency."
+        "No Flutter app/package project detected. Open a workspace with a valid pubspec.yaml (including Flutter Web/custom package setups)."
       );
       return;
     }
@@ -385,8 +382,8 @@ async function saveProfiles(profiles: RunProfile[]): Promise<void> {
 }
 
 async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> {
-  const folder = getWorkspaceFolderPath();
-  const flutter = folder ? await isFlutterProject(folder) : false;
+  const folder = await resolveFlutterProjectFolderPath();
+  const flutter = Boolean(folder);
   await vscode.commands.executeCommand("setContext", FLUTTER_CONTEXT_KEY, flutter);
 
   if (!flutter) {
@@ -474,7 +471,7 @@ async function isFlutterProject(folderPath: string): Promise<boolean> {
       return true;
     }
 
-    return hasFlutterSdkDependency(lines);
+    return hasFlutterSdkDependency(content);
   } catch {
     return false;
   }
@@ -484,74 +481,107 @@ function hasTopLevelFlutterSection(lines: string[]): boolean {
   return lines.some((line) => line.match(/^flutter\s*:/) !== null);
 }
 
-function hasFlutterSdkDependency(lines: string[]): boolean {
-  type RootSection = "dependencies" | "dev_dependencies" | "dependency_overrides" | undefined;
-  let rootSection: RootSection;
-  let currentDependencyName: string | undefined;
-  let currentDependencyIndent = -1;
+function hasFlutterSdkDependency(content: string): boolean {
+  const flutterDependencyPattern =
+    /(^|\n)\s*(flutter|flutter_web_plugins)\s*:\s*(?:\{[^}\n]*\bsdk\s*:\s*flutter\b[^}\n]*\}|sdk\s*:\s*flutter\b)/im;
+  if (flutterDependencyPattern.test(content)) {
+    return true;
+  }
 
-  for (const rawLine of lines) {
-    const withoutComments = rawLine.replace(/\s+#.*$/, "");
-    const match = withoutComments.match(/^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
-    if (!match) {
-      continue;
-    }
+  const flutterDependencyBlockPattern =
+    /(^|\n)\s*(flutter|flutter_web_plugins)\s*:\s*(?:\r?\n)(?:[ \t]+.*(?:\r?\n))*?[ \t]+sdk\s*:\s*flutter\b/im;
+  return flutterDependencyBlockPattern.test(content);
+}
 
-    const indent = match[1].length;
-    const key = match[2];
-    const value = match[3].trim();
+async function resolveFlutterProjectFolderPath(): Promise<string | undefined> {
+  const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+  if (!workspaceFolders.length) {
+    return undefined;
+  }
 
-    if (indent === 0) {
-      rootSection =
-        key === "dependencies" || key === "dev_dependencies" || key === "dependency_overrides"
-          ? key
-          : undefined;
-      currentDependencyName = undefined;
-      currentDependencyIndent = -1;
-      continue;
-    }
+  const activePath = vscode.window.activeTextEditor?.document.uri.fsPath;
+  const cacheKey = `${workspaceFolders.map((folder) => folder.uri.fsPath).join("|")}::${activePath ?? ""}`;
+  const now = Date.now();
+  if (cachedFlutterProjectFolder && cachedFlutterProjectFolder.key === cacheKey && now - cachedFlutterProjectFolder.resolvedAt < 5000) {
+    return cachedFlutterProjectFolder.folderPath;
+  }
 
-    if (!rootSection) {
-      continue;
-    }
-
-    if (indent === 2) {
-      currentDependencyName = key;
-      currentDependencyIndent = indent;
-
-      const inlineFlutterSdk =
-        value.length > 0 &&
-        /(sdk\s*:\s*flutter)/i.test(value) &&
-        (key === "flutter" || key === "flutter_web_plugins");
-      if (inlineFlutterSdk) {
-        return true;
-      }
-      continue;
-    }
-
-    if (indent > currentDependencyIndent && currentDependencyName) {
-      if (
-        (currentDependencyName === "flutter" || currentDependencyName === "flutter_web_plugins") &&
-        key === "sdk" &&
-        /^flutter$/i.test(value)
-      ) {
-        return true;
-      }
-      continue;
-    }
-
-    if (indent <= 2) {
-      currentDependencyName = undefined;
-      currentDependencyIndent = -1;
+  const monorepoAppsCandidates = await getMonorepoAppsCandidates(workspaceFolders);
+  for (const candidate of monorepoAppsCandidates) {
+    if (await isFlutterProject(candidate)) {
+      cachedFlutterProjectFolder = { key: cacheKey, resolvedAt: now, folderPath: candidate };
+      return candidate;
     }
   }
 
-  return false;
+  const directCandidates = sortPathsByActiveFile(
+    workspaceFolders.map((folder) => folder.uri.fsPath),
+    activePath
+  );
+  for (const candidate of directCandidates) {
+    if (await isFlutterProject(candidate)) {
+      cachedFlutterProjectFolder = { key: cacheKey, resolvedAt: now, folderPath: candidate };
+      return candidate;
+    }
+  }
+
+  const nestedPubspecs = await vscode.workspace.findFiles(
+    "**/pubspec.yaml",
+    "**/{.dart_tool,build,node_modules,.git}/**",
+    200
+  );
+  const nestedProjectFolders = sortPathsByActiveFile(
+    Array.from(new Set(nestedPubspecs.map((file) => path.dirname(file.fsPath)))),
+    activePath
+  );
+  for (const candidate of nestedProjectFolders) {
+    if (await isFlutterProject(candidate)) {
+      cachedFlutterProjectFolder = { key: cacheKey, resolvedAt: now, folderPath: candidate };
+      return candidate;
+    }
+  }
+
+  cachedFlutterProjectFolder = { key: cacheKey, resolvedAt: now, folderPath: undefined };
+  return undefined;
 }
 
-function getWorkspaceFolderPath(): string | undefined {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  return folder?.uri.fsPath;
+async function getMonorepoAppsCandidates(workspaceFolders: readonly vscode.WorkspaceFolder[]): Promise<string[]> {
+  const candidates: string[] = [];
+  for (const workspaceFolder of workspaceFolders) {
+    const appsFolder = path.join(workspaceFolder.uri.fsPath, "apps");
+    try {
+      const entries = await fs.readdir(appsFolder, { withFileTypes: true });
+      const appDirs = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort((left, right) => left.localeCompare(right));
+      for (const appDir of appDirs) {
+        candidates.push(path.join(appsFolder, appDir));
+      }
+    } catch {
+      // Ignore workspaces without apps folder.
+    }
+  }
+  return candidates;
+}
+
+function sortPathsByActiveFile(paths: string[], activePath?: string): string[] {
+  if (!activePath) {
+    return paths;
+  }
+
+  return [...paths].sort((left, right) => {
+    const leftScore = isParentPath(left, activePath) ? left.length : -1;
+    const rightScore = isParentPath(right, activePath) ? right.length : -1;
+    return rightScore - leftScore;
+  });
+}
+
+function isParentPath(parent: string, child: string): boolean {
+  if (child === parent) {
+    return true;
+  }
+  return child.startsWith(`${parent}${path.sep}`);
 }
 
 async function execCommand(
