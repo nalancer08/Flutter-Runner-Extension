@@ -122,7 +122,7 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
     const flutterProject = await isFlutterProject(folder);
     if (!flutterProject) {
       void vscode.window.showErrorMessage(
-        "This is not a Flutter project. Expected a pubspec.yaml with Flutter dependency."
+        "This is not a Flutter app/package project. Expected a pubspec.yaml with Flutter SDK dependency."
       );
       return;
     }
@@ -468,10 +468,85 @@ async function isFlutterProject(folderPath: string): Promise<boolean> {
   const pubspecPath = path.join(folderPath, "pubspec.yaml");
   try {
     const content = await fs.readFile(pubspecPath, "utf8");
-    return /\bflutter\s*:/m.test(content);
+    const lines = content.split(/\r?\n/);
+
+    if (hasTopLevelFlutterSection(lines)) {
+      return true;
+    }
+
+    return hasFlutterSdkDependency(lines);
   } catch {
     return false;
   }
+}
+
+function hasTopLevelFlutterSection(lines: string[]): boolean {
+  return lines.some((line) => line.match(/^flutter\s*:/) !== null);
+}
+
+function hasFlutterSdkDependency(lines: string[]): boolean {
+  type RootSection = "dependencies" | "dev_dependencies" | "dependency_overrides" | undefined;
+  let rootSection: RootSection;
+  let currentDependencyName: string | undefined;
+  let currentDependencyIndent = -1;
+
+  for (const rawLine of lines) {
+    const withoutComments = rawLine.replace(/\s+#.*$/, "");
+    const match = withoutComments.match(/^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const indent = match[1].length;
+    const key = match[2];
+    const value = match[3].trim();
+
+    if (indent === 0) {
+      rootSection =
+        key === "dependencies" || key === "dev_dependencies" || key === "dependency_overrides"
+          ? key
+          : undefined;
+      currentDependencyName = undefined;
+      currentDependencyIndent = -1;
+      continue;
+    }
+
+    if (!rootSection) {
+      continue;
+    }
+
+    if (indent === 2) {
+      currentDependencyName = key;
+      currentDependencyIndent = indent;
+
+      const inlineFlutterSdk =
+        value.length > 0 &&
+        /(sdk\s*:\s*flutter)/i.test(value) &&
+        (key === "flutter" || key === "flutter_web_plugins");
+      if (inlineFlutterSdk) {
+        return true;
+      }
+      continue;
+    }
+
+    if (indent > currentDependencyIndent && currentDependencyName) {
+      if (
+        (currentDependencyName === "flutter" || currentDependencyName === "flutter_web_plugins") &&
+        key === "sdk" &&
+        /^flutter$/i.test(value)
+      ) {
+        return true;
+      }
+      continue;
+    }
+
+    if (indent <= 2) {
+      currentDependencyName = undefined;
+      currentDependencyIndent = -1;
+    }
+  }
+
+  return false;
 }
 
 function getWorkspaceFolderPath(): string | undefined {

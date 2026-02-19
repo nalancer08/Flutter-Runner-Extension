@@ -4,7 +4,7 @@
 
 ## Key Capabilities
 
-- Detects whether the current workspace is a Flutter project (`pubspec.yaml` with `flutter:` dependency).
+- Detects Flutter app/package workspaces (including Flutter Web/custom package setups) from `pubspec.yaml`.
 - Adds contextual editor toolbar actions for:
   - Run
   - Stop
