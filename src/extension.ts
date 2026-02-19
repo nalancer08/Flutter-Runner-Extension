@@ -12,14 +12,17 @@ type RunProfile = {
 
 const FLUTTER_CONTEXT_KEY = "flutterRunner.isFlutterProject";
 const HAS_SELECTED_DEVICE_CONTEXT_KEY = "flutterRunner.hasSelectedDevice";
+const HAS_WEB_DEVICE_CONTEXT_KEY = "flutterRunner.hasWebDevice";
 const IS_RUNNING_CONTEXT_KEY = "flutterRunner.isRunning";
 const IS_STARTING_CONTEXT_KEY = "flutterRunner.isStarting";
 const HAS_DEVTOOLS_URL_CONTEXT_KEY = "flutterRunner.hasDevToolsUrl";
 const DEVTOOLS_URL_PATTERN = /(https?:\/\/[^\s)]+)/i;
+const URL_PATTERN_GLOBAL = /https?:\/\/[^\s)]+/gi;
 
 let output: vscode.OutputChannel;
 let runProcess: ChildProcessWithoutNullStreams | undefined;
 let runButton: vscode.StatusBarItem;
+let runWebTabButton: vscode.StatusBarItem;
 let stopButton: vscode.StatusBarItem;
 let devToolsButton: vscode.StatusBarItem;
 let profileButton: vscode.StatusBarItem;
@@ -27,7 +30,11 @@ let selectedDeviceId: string | undefined;
 let extensionCtx: vscode.ExtensionContext;
 let hotReloadDebounceTimer: NodeJS.Timeout | undefined;
 let latestDevToolsUrl: string | undefined;
+let latestWebAppUrl: string | undefined;
 let isRunStarting = false;
+let hasOpenedWebPreviewForRun = false;
+let currentRunIsWeb = false;
+let currentRunOpensInTab = false;
 let cachedFlutterProjectFolder:
   | { key: string; resolvedAt: number; folderPath: string | undefined }
   | undefined;
@@ -41,26 +48,33 @@ export function activate(context: vscode.ExtensionContext): void {
   runButton.text = "$(play)";
   runButton.tooltip = "Run Flutter app with active profile";
 
-  stopButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 199);
+  runWebTabButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 199);
+  runWebTabButton.command = "flutterRunner.runWebInTab";
+  runWebTabButton.text = "$(browser) Tab";
+  runWebTabButton.tooltip = "Run Flutter Web in editor tab";
+
+  stopButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 198);
   stopButton.command = "flutterRunner.stopRun";
   stopButton.text = "$(debug-stop)";
   stopButton.tooltip = "Stop current Flutter run";
 
-  devToolsButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 198);
+  devToolsButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 197);
   devToolsButton.command = "flutterRunner.openDevTools";
   devToolsButton.text = "$(globe)";
   devToolsButton.tooltip = "Open Flutter DevTools";
 
-  profileButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 197);
+  profileButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 196);
   profileButton.command = "flutterRunner.selectProfile";
 
   context.subscriptions.push(
     output,
     runButton,
+    runWebTabButton,
     stopButton,
     devToolsButton,
     profileButton,
     vscode.commands.registerCommand("flutterRunner.run", () => runFlutter(context)),
+    vscode.commands.registerCommand("flutterRunner.runWebInTab", () => runFlutterWebInTab(context)),
     vscode.commands.registerCommand("flutterRunner.stopRun", () => stopRun(context)),
     vscode.commands.registerCommand("flutterRunner.openDevTools", openDevTools),
     vscode.commands.registerCommand("flutterRunner.hotReload", () => triggerHotReload("manual")),
@@ -113,6 +127,27 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
 
+  await startFlutterRun(context, false);
+}
+
+async function runFlutterWebInTab(context: vscode.ExtensionContext): Promise<void> {
+  if (isRunStarting) {
+    void vscode.window.showWarningMessage("Flutter run is already starting. Please wait.");
+    return;
+  }
+  if (runProcess) {
+    void vscode.window.showWarningMessage(
+      "A Flutter run is already active. Stop it first, then use Run Web in Tab."
+    );
+    return;
+  }
+  await startFlutterRun(context, true);
+}
+
+async function startFlutterRun(
+  context: vscode.ExtensionContext,
+  forceWebInTab: boolean
+): Promise<void> {
   isRunStarting = true;
   await setStartingState(context, true);
   try {
@@ -132,8 +167,8 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
       return;
     }
 
-    const deviceId = await resolveSelectedDeviceId();
-    if (!deviceId) {
+    const selectedDevice = await resolveSelectedDeviceId();
+    if (!selectedDevice) {
       runButton.text = "$(circle-slash)";
       runButton.command = undefined;
       runButton.tooltip = "Select a Flutter device in the toolbar first";
@@ -148,12 +183,21 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
       return;
     }
 
+    const selectedIsWeb = isWebDeviceId(selectedDevice);
+    if (forceWebInTab && !selectedIsWeb) {
+      void vscode.window.showWarningMessage(
+        "Run Web in Tab is only available when a Web device (Chrome/Edge/Web) is selected."
+      );
+      return;
+    }
+
+    const runDeviceId = forceWebInTab && selectedIsWeb ? "web-server" : selectedDevice;
     const entrypoint = (profile.dartEntrypoint || "").trim() || "lib/main.dart";
     const flavor = (profile.flavor || "").trim();
     const args = ["run"];
 
     args.push("-t", entrypoint);
-    args.push("-d", deviceId);
+    args.push("-d", runDeviceId);
     if (flavor.length > 0) {
       args.push("--flavor", flavor);
     }
@@ -162,12 +206,22 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
     output.appendLine("");
     output.appendLine("=== Flutter Runner ===");
     output.appendLine(`Profile: ${profile.name}`);
-    output.appendLine(`Device: ${deviceId}`);
+    output.appendLine(`Device: ${runDeviceId}`);
+    if (runDeviceId !== selectedDevice) {
+      output.appendLine(`Selected device: ${selectedDevice}`);
+    }
     output.appendLine(`Entrypoint: ${entrypoint}`);
     output.appendLine(`Flavor: ${flavor || "none"}`);
+    if (forceWebInTab) {
+      output.appendLine("Web mode: editor tab");
+    }
     output.appendLine(`Command: flutter ${args.join(" ")}`);
     output.appendLine("");
     latestDevToolsUrl = undefined;
+    latestWebAppUrl = undefined;
+    hasOpenedWebPreviewForRun = false;
+    currentRunIsWeb = selectedIsWeb;
+    currentRunOpensInTab = forceWebInTab && selectedIsWeb;
     await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
 
     runProcess = spawn("flutter", args, {
@@ -181,11 +235,13 @@ async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
       const text = chunk.toString();
       output.append(text);
       void captureDevToolsUrl(text);
+      void captureWebAppUrl(text);
     });
     runProcess.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       output.append(text);
       void captureDevToolsUrl(text);
+      void captureWebAppUrl(text);
     });
 
     runProcess.on("error", (error) => {
@@ -213,6 +269,10 @@ async function stopRun(context: vscode.ExtensionContext = extensionCtx): Promise
     runProcess = undefined;
   }
   latestDevToolsUrl = undefined;
+  latestWebAppUrl = undefined;
+  hasOpenedWebPreviewForRun = false;
+  currentRunIsWeb = false;
+  currentRunOpensInTab = false;
   await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
 
   await setRunningState(context, false);
@@ -390,8 +450,10 @@ async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> 
     selectedDeviceId = undefined;
     latestDevToolsUrl = undefined;
     await vscode.commands.executeCommand("setContext", HAS_SELECTED_DEVICE_CONTEXT_KEY, false);
+    await vscode.commands.executeCommand("setContext", HAS_WEB_DEVICE_CONTEXT_KEY, false);
     await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
     runButton.hide();
+    runWebTabButton.hide();
     stopButton.hide();
     devToolsButton.hide();
     profileButton.hide();
@@ -399,6 +461,7 @@ async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> 
   }
 
   runButton.show();
+  runWebTabButton.hide();
   if (runProcess) {
     stopButton.show();
     devToolsButton.show();
@@ -412,7 +475,9 @@ async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> 
   profileButton.show();
   selectedDeviceId = await resolveSelectedDeviceId();
   const hasDevice = Boolean(selectedDeviceId);
+  const hasWebDevice = Boolean(selectedDeviceId && isWebDeviceId(selectedDeviceId));
   await vscode.commands.executeCommand("setContext", HAS_SELECTED_DEVICE_CONTEXT_KEY, hasDevice);
+  await vscode.commands.executeCommand("setContext", HAS_WEB_DEVICE_CONTEXT_KEY, hasWebDevice);
   if (runProcess || isRunStarting) {
     runButton.text = runProcess ? "$(debug-restart)" : "$(sync~spin)";
     runButton.command = runProcess ? "flutterRunner.run" : undefined;
@@ -425,6 +490,12 @@ async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> 
     runButton.tooltip = hasDevice
       ? `Run Flutter app on ${selectedDeviceId}`
       : "Select a Flutter device in the toolbar first";
+    if (hasWebDevice) {
+      runWebTabButton.text = "$(browser) Tab";
+      runWebTabButton.command = "flutterRunner.runWebInTab";
+      runWebTabButton.tooltip = "Run Flutter Web in editor tab";
+      runWebTabButton.show();
+    }
   }
   const activeProfile = getActiveProfile();
   const entrypoint = (activeProfile?.dartEntrypoint || "").trim() || "lib/main.dart";
@@ -743,6 +814,60 @@ async function captureDevToolsUrl(outputChunk: string): Promise<void> {
   }
 }
 
+async function captureWebAppUrl(outputChunk: string): Promise<void> {
+  if (!currentRunIsWeb || !currentRunOpensInTab) {
+    return;
+  }
+
+  const matches = outputChunk.match(URL_PATTERN_GLOBAL) ?? [];
+  for (const match of matches) {
+    const url = sanitizeUrl(match);
+    if (!url) {
+      continue;
+    }
+
+    if (!isLocalWebUrl(url)) {
+      continue;
+    }
+
+    latestWebAppUrl = url;
+    await maybeOpenWebAppPreview(url);
+    return;
+  }
+}
+
+async function maybeOpenWebAppPreview(url: string): Promise<void> {
+  if (!currentRunIsWeb || !currentRunOpensInTab) {
+    return;
+  }
+  if (hasOpenedWebPreviewForRun) {
+    return;
+  }
+  hasOpenedWebPreviewForRun = true;
+
+  await openWebPreviewInSplit(url);
+}
+
+async function openWebPreviewInSplit(url: string): Promise<void> {
+  try {
+    await vscode.commands.executeCommand("simpleBrowser.show", url, {
+      viewColumn: vscode.ViewColumn.Beside,
+      preserveFocus: false
+    });
+    return;
+  } catch {
+    // Fallback for environments where options are not supported.
+  }
+
+  try {
+    await vscode.commands.executeCommand("simpleBrowser.show", url);
+  } catch {
+    void vscode.window.showWarningMessage(
+      "Could not open Web app in editor tab. You can open the URL manually from Flutter Runner output."
+    );
+  }
+}
+
 async function openDevTools(): Promise<void> {
   if (latestDevToolsUrl) {
     try {
@@ -986,5 +1111,22 @@ function sanitizeUrl(candidate: string): string | undefined {
     return parsed.toString();
   } catch {
     return undefined;
+  }
+}
+
+function isWebDeviceId(deviceId: string): boolean {
+  const normalized = deviceId.trim().toLowerCase();
+  return normalized === "chrome" || normalized === "edge" || normalized === "web-server" || normalized.startsWith("web-");
+}
+
+function isLocalWebUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "http:" &&
+      (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "[::1]")
+    );
+  } catch {
+    return false;
   }
 }

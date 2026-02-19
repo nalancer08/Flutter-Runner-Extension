@@ -20,6 +20,7 @@
 - Supports manual hot reload and one-click hot restart when a run is already active.
 - Supports automatic hot reload on Dart file save (configurable).
 - Opens Flutter DevTools inside the editor when a DevTools URL is detected.
+- Adds a dedicated `Run Web in Tab` action when a Web device is selected.
 
 ## Commands
 
@@ -28,6 +29,7 @@
 - `Flutter Runner: Select Run Profile`
 - `Flutter Runner: Hot Reload`
 - `Flutter Runner: Open DevTools`
+- `Flutter Runner: Run Web in Tab`
 
 ## Configuration
 
@@ -59,6 +61,8 @@ When `Flutter Runner: Run` is executed:
 - The extension always passes `-t <dartEntrypoint>`.
 - If `flavor` is set, it also passes `--flavor <flavor>`.
 - If no entrypoint is configured, `lib/main.dart` is used.
+- `Flutter Runner: Run` keeps existing behavior (for Web browser devices, it runs as usual in the selected browser).
+- `Flutter Runner: Run Web in Tab` appears when a Web device is selected and runs using `web-server`, opening the app in a split editor tab (`Beside`) with the native browser URL bar.
 
 If a Flutter run is already active, the same Run action triggers **hot restart**.
 
