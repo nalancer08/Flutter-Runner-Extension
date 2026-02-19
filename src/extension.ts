@@ -13,6 +13,7 @@ type RunProfile = {
 const FLUTTER_CONTEXT_KEY = "flutterRunner.isFlutterProject";
 const HAS_SELECTED_DEVICE_CONTEXT_KEY = "flutterRunner.hasSelectedDevice";
 const IS_RUNNING_CONTEXT_KEY = "flutterRunner.isRunning";
+const IS_STARTING_CONTEXT_KEY = "flutterRunner.isStarting";
 const HAS_DEVTOOLS_URL_CONTEXT_KEY = "flutterRunner.hasDevToolsUrl";
 const DEVTOOLS_URL_PATTERN = /(https?:\/\/[^\s)]+)/i;
 
@@ -26,6 +27,7 @@ let selectedDeviceId: string | undefined;
 let extensionCtx: vscode.ExtensionContext;
 let hotReloadDebounceTimer: NodeJS.Timeout | undefined;
 let latestDevToolsUrl: string | undefined;
+let isRunStarting = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionCtx = context;
@@ -98,102 +100,114 @@ export function deactivate(): void {
 }
 
 async function runFlutter(context: vscode.ExtensionContext): Promise<void> {
+  if (isRunStarting) {
+    void vscode.window.showWarningMessage("Flutter run is already starting. Please wait.");
+    return;
+  }
+
   if (runProcess) {
     await triggerHotRestart("manual");
     return;
   }
 
-  const folder = getWorkspaceFolderPath();
-  if (!folder) {
-    void vscode.window.showErrorMessage("Open a workspace folder first.");
-    return;
-  }
-
-  const flutterProject = await isFlutterProject(folder);
-  if (!flutterProject) {
-    void vscode.window.showErrorMessage(
-      "This is not a Flutter project. Expected a pubspec.yaml with Flutter dependency."
-    );
-    return;
-  }
-
-  const profile = getActiveProfile() ?? getProfiles()[0];
-  if (!profile) {
-    void vscode.window.showErrorMessage(
-      "No Flutter Runner profiles configured. Add at least one profile in settings."
-    );
-    return;
-  }
-
-  const deviceId = await resolveSelectedDeviceId();
-  if (!deviceId) {
-    runButton.text = "$(circle-slash)";
-    runButton.command = undefined;
-    runButton.tooltip = "Select a Flutter device in the toolbar first";
-    await vscode.commands.executeCommand("setContext", HAS_SELECTED_DEVICE_CONTEXT_KEY, false);
-    const selection = await vscode.window.showWarningMessage(
-      "No Flutter device selected. Select one from the Flutter/Dart device toolbar first.",
-      "Open Flutter: Select Device"
-    );
-    if (selection === "Open Flutter: Select Device") {
-      await vscode.commands.executeCommand("flutter.selectDevice");
+  isRunStarting = true;
+  await setStartingState(context, true);
+  try {
+    const folder = getWorkspaceFolderPath();
+    if (!folder) {
+      void vscode.window.showErrorMessage("Open a workspace folder first.");
+      return;
     }
-    return;
+
+    const flutterProject = await isFlutterProject(folder);
+    if (!flutterProject) {
+      void vscode.window.showErrorMessage(
+        "This is not a Flutter project. Expected a pubspec.yaml with Flutter dependency."
+      );
+      return;
+    }
+
+    const profile = getActiveProfile() ?? getProfiles()[0];
+    if (!profile) {
+      void vscode.window.showErrorMessage(
+        "No Flutter Runner profiles configured. Add at least one profile in settings."
+      );
+      return;
+    }
+
+    const deviceId = await resolveSelectedDeviceId();
+    if (!deviceId) {
+      runButton.text = "$(circle-slash)";
+      runButton.command = undefined;
+      runButton.tooltip = "Select a Flutter device in the toolbar first";
+      await vscode.commands.executeCommand("setContext", HAS_SELECTED_DEVICE_CONTEXT_KEY, false);
+      const selection = await vscode.window.showWarningMessage(
+        "No Flutter device selected. Select one from the Flutter/Dart device toolbar first.",
+        "Open Flutter: Select Device"
+      );
+      if (selection === "Open Flutter: Select Device") {
+        await vscode.commands.executeCommand("flutter.selectDevice");
+      }
+      return;
+    }
+
+    const entrypoint = (profile.dartEntrypoint || "").trim() || "lib/main.dart";
+    const flavor = (profile.flavor || "").trim();
+    const args = ["run"];
+
+    args.push("-t", entrypoint);
+    args.push("-d", deviceId);
+    if (flavor.length > 0) {
+      args.push("--flavor", flavor);
+    }
+
+    output.show(true);
+    output.appendLine("");
+    output.appendLine("=== Flutter Runner ===");
+    output.appendLine(`Profile: ${profile.name}`);
+    output.appendLine(`Device: ${deviceId}`);
+    output.appendLine(`Entrypoint: ${entrypoint}`);
+    output.appendLine(`Flavor: ${flavor || "none"}`);
+    output.appendLine(`Command: flutter ${args.join(" ")}`);
+    output.appendLine("");
+    latestDevToolsUrl = undefined;
+    await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
+
+    runProcess = spawn("flutter", args, {
+      cwd: folder,
+      shell: false
+    });
+
+    await setRunningState(context, true);
+
+    runProcess.stdout.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      output.append(text);
+      void captureDevToolsUrl(text);
+    });
+    runProcess.stderr.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      output.append(text);
+      void captureDevToolsUrl(text);
+    });
+
+    runProcess.on("error", (error) => {
+      output.appendLine(`\n[error] ${error.message}`);
+      void stopRun(context);
+      void vscode.window.showErrorMessage(
+        "Could not start Flutter. Make sure `flutter` is installed and in PATH."
+      );
+    });
+
+    runProcess.on("close", (code) => {
+      output.appendLine(`\n[exit] flutter run finished with code ${code ?? "unknown"}`);
+      void stopRun(context);
+    });
+  } finally {
+    isRunStarting = false;
+    await setStartingState(context, false);
+    await updateStatusBar(context);
   }
-
-  const entrypoint = (profile.dartEntrypoint || "").trim() || "lib/main.dart";
-  const flavor = (profile.flavor || "").trim();
-  const args = ["run"];
-
-  args.push("-t", entrypoint);
-  args.push("-d", deviceId);
-  if (flavor.length > 0) {
-    args.push("--flavor", flavor);
-  }
-
-  output.show(true);
-  output.appendLine("");
-  output.appendLine("=== Flutter Runner ===");
-  output.appendLine(`Profile: ${profile.name}`);
-  output.appendLine(`Device: ${deviceId}`);
-  output.appendLine(`Entrypoint: ${entrypoint}`);
-  output.appendLine(`Flavor: ${flavor || "none"}`);
-  output.appendLine(`Command: flutter ${args.join(" ")}`);
-  output.appendLine("");
-  latestDevToolsUrl = undefined;
-  await vscode.commands.executeCommand("setContext", HAS_DEVTOOLS_URL_CONTEXT_KEY, false);
-
-  runProcess = spawn("flutter", args, {
-    cwd: folder,
-    shell: false
-  });
-
-  await setRunningState(context, true);
-  await updateStatusBar(context);
-
-  runProcess.stdout.on("data", (chunk: Buffer) => {
-    const text = chunk.toString();
-    output.append(text);
-    void captureDevToolsUrl(text);
-  });
-  runProcess.stderr.on("data", (chunk: Buffer) => {
-    const text = chunk.toString();
-    output.append(text);
-    void captureDevToolsUrl(text);
-  });
-
-  runProcess.on("error", (error) => {
-    output.appendLine(`\n[error] ${error.message}`);
-    void stopRun(context);
-    void vscode.window.showErrorMessage(
-      "Could not start Flutter. Make sure `flutter` is installed and in PATH."
-    );
-  });
-
-  runProcess.on("close", (code) => {
-    output.appendLine(`\n[exit] flutter run finished with code ${code ?? "unknown"}`);
-    void stopRun(context);
-  });
 }
 
 async function stopRun(context: vscode.ExtensionContext = extensionCtx): Promise<void> {
@@ -402,10 +416,12 @@ async function updateStatusBar(context: vscode.ExtensionContext): Promise<void> 
   selectedDeviceId = await resolveSelectedDeviceId();
   const hasDevice = Boolean(selectedDeviceId);
   await vscode.commands.executeCommand("setContext", HAS_SELECTED_DEVICE_CONTEXT_KEY, hasDevice);
-  if (runProcess) {
-    runButton.text = "$(debug-restart)";
-    runButton.command = "flutterRunner.run";
-    runButton.tooltip = "Hot restart running app";
+  if (runProcess || isRunStarting) {
+    runButton.text = runProcess ? "$(debug-restart)" : "$(sync~spin)";
+    runButton.command = runProcess ? "flutterRunner.run" : undefined;
+    runButton.tooltip = runProcess
+      ? "Hot restart running app"
+      : "Starting Flutter run...";
   } else {
     runButton.text = hasDevice ? "$(play)" : "$(circle-slash)";
     runButton.command = hasDevice ? "flutterRunner.run" : undefined;
@@ -571,6 +587,11 @@ async function resolveSelectedDeviceId(): Promise<string | undefined> {
 async function setRunningState(context: vscode.ExtensionContext, running: boolean): Promise<void> {
   await vscode.commands.executeCommand("setContext", IS_RUNNING_CONTEXT_KEY, running);
   await context.workspaceState.update(IS_RUNNING_CONTEXT_KEY, running);
+}
+
+async function setStartingState(context: vscode.ExtensionContext, starting: boolean): Promise<void> {
+  await vscode.commands.executeCommand("setContext", IS_STARTING_CONTEXT_KEY, starting);
+  await context.workspaceState.update(IS_STARTING_CONTEXT_KEY, starting);
 }
 
 async function triggerHotReload(trigger: "manual" | "save"): Promise<void> {

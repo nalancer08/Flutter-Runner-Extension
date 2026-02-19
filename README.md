@@ -1,25 +1,27 @@
-# Flutter Runner Extension
+# Flutter Runner
 
-Extension para VS Code/Cursor enfocada en ejecutar Flutter con perfiles simples.
+`Flutter Runner` is a Visual Studio Code/Cursor extension that streamlines running Flutter applications with reusable run profiles, quick toolbar actions, and integrated workflow support for hot reload, hot restart, and DevTools access.
 
-## Caracteristicas
+## Key Capabilities
 
-- Detecta si el workspace es un proyecto Flutter (`pubspec.yaml` con `flutter:`).
-- Boton `Run` en la barra superior del editor.
-- Perfiles de ejecucion configurables con:
-  - `dartEntrypoint` (por defecto siempre `lib/main.dart`)
-  - `flavor` (opcional)
-- Un solo boton de perfil para seleccionar, crear, editar y eliminar perfiles.
-- Crear/editar perfil en un formulario unico (todos los campos a la vez).
-- Logs de `flutter run` en el `OutputChannel`.
-- Soporte de hot reload:
-  - Manual con comando `Flutter Runner: Hot Reload`
-  - Automatico al guardar archivos `.dart` (configurable)
-- Si ya hay una app corriendo, `Run` vuelve a ejecutar como **hot restart** (rapido, toma cambios recientes).
-- `Stop` se mantiene como accion separada.
-- Boton/comando `Open DevTools` para abrir los DevTools en una pestana interna (sin navegador externo) cuando `flutter run` publica la URL.
+- Detects whether the current workspace is a Flutter project (`pubspec.yaml` with `flutter:` dependency).
+- Adds contextual editor toolbar actions for:
+  - Run
+  - Stop
+  - Hot Reload
+  - Open DevTools
+  - Select Profile
+- Supports configurable run profiles with:
+  - `name` (required)
+  - `dartEntrypoint` (defaults to `lib/main.dart`)
+  - `flavor` (optional)
+- Provides profile management in one place (create, select, edit, delete).
+- Streams `flutter run` logs to the `Flutter Runner` output channel.
+- Supports manual hot reload and one-click hot restart when a run is already active.
+- Supports automatic hot reload on Dart file save (configurable).
+- Opens Flutter DevTools inside the editor when a DevTools URL is detected.
 
-## Comandos
+## Commands
 
 - `Flutter Runner: Run`
 - `Flutter Runner: Stop Run`
@@ -27,9 +29,9 @@ Extension para VS Code/Cursor enfocada en ejecutar Flutter con perfiles simples.
 - `Flutter Runner: Hot Reload`
 - `Flutter Runner: Open DevTools`
 
-## Configuracion
+## Configuration
 
-Configura en `settings.json`:
+Configure the extension in your workspace `settings.json`:
 
 ```json
 {
@@ -45,29 +47,50 @@ Configura en `settings.json`:
       "dartEntrypoint": "lib/main_prod.dart",
       "flavor": "prod"
     }
-  ]
-}
-```
-
-Comportamiento de `run`:
-
-- Siempre usa `-t <dartEntrypoint>`.
-- Si el perfil tiene `flavor`, agrega `--flavor <flavor>`.
-- Si el perfil no define entrypoint, usa `lib/main.dart`.
-
-Hot reload al guardar:
-
-```json
-{
+  ],
   "flutterRunner.hotReloadOnSave": true
 }
 ```
 
-## Desarrollo local
+### Run Behavior
+
+When `Flutter Runner: Run` is executed:
+
+- The extension always passes `-t <dartEntrypoint>`.
+- If `flavor` is set, it also passes `--flavor <flavor>`.
+- If no entrypoint is configured, `lib/main.dart` is used.
+
+If a Flutter run is already active, the same Run action triggers **hot restart**.
+
+## How to Use
+
+1. Open a Flutter workspace.
+2. Ensure a Flutter device is selected (via Flutter/Dart device selector).
+3. Open the profile selector (`Flutter Runner: Select Run Profile`) and choose or create a profile.
+4. Start the app using `Flutter Runner: Run` or the Run toolbar button.
+5. Use the toolbar commands during execution:
+   - `Stop` to terminate the process
+   - `Hot Reload` to apply code changes quickly
+   - `Run` (while active) to trigger hot restart
+   - `Open DevTools` to inspect runtime performance and state
+
+## Requirements
+
+- Flutter SDK installed and available in your `PATH`.
+- A valid Flutter project in the current workspace.
+- A selected target device.
+
+## Local Development
 
 ```bash
 npm install
 npm run build
 ```
 
-Presiona `F5` para abrir una Extension Development Host.
+Press `F5` to launch an Extension Development Host.
+
+## Troubleshooting
+
+- **No Run button is shown**: verify the workspace is a Flutter project.
+- **Run is unavailable**: select a Flutter device first.
+- **DevTools does not open**: wait until `flutter run` logs print the DevTools URL.

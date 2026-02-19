@@ -2,9 +2,15 @@
   "name": "flutter-runner-extension",
   "displayName": "Flutter Runner",
   "description": "Run Flutter projects in VS Code/Cursor with quick device and profile selection.",
-  "version": "0.0.1",
-  "publisher": "ercsanchez",
+  "version": "1.0.0",
+  "publisher": "AppBuilders",
   "license": "MIT",
+  "homepage": "https://appbuilders.com.mx/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nalancer08/Flutter-Runner-Extension.git"
+  },
+  "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -48,7 +54,7 @@
       "editor/title": [
         {
           "command": "flutterRunner.run",
-          "when": "flutterRunner.isFlutterProject && flutterRunner.hasSelectedDevice",
+          "when": "flutterRunner.isFlutterProject && flutterRunner.hasSelectedDevice && !flutterRunner.isRunning && !flutterRunner.isStarting",
           "group": "navigation@1"
         },
         {
